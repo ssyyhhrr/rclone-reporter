@@ -21,6 +21,16 @@ const localCache = {
     updateStartTime: null
 };
 
+// Temporary cache storage for remotes during updates
+const remoteCacheTemp = {
+    data: new Map()
+};
+
+// Temporary cache storage for local directories during updates
+const localCacheTemp = {
+    data: new Map()
+};
+
 // NEW: Structure to track size history for last modified detection
 const localSizeHistory = {
     data: new Map() // Map<directoryPath, Array<{timestamp, bytes}>>
@@ -154,6 +164,8 @@ function formatBytes(bytes, decimals = 2) {
  */
 async function updateRemoteCache() {
     try {
+        // Initialize temporary cache
+        remoteCacheTemp.data = new Map(remoteCache.data);
         const startTime = new Date();
         console.log(`[REMOTE_CACHE] Starting cache update at ${startTime.toISOString()}`);
         console.log(`[REMOTE_CACHE] Retrieving list of available remotes...`);
@@ -178,7 +190,7 @@ async function updateRemoteCache() {
                 const durationSec = (durationMs / 1000).toFixed(2);
 
                 if (!sizeInfo.error) {
-                    remoteCache.data.set(remotePath, {
+                    remoteCacheTemp.data.set(remotePath, {
                         bytes: sizeInfo.bytes || 0,
                         count: sizeInfo.count || 0,
                         timestamp: new Date().toISOString(),
@@ -217,6 +229,9 @@ async function updateRemoteCache() {
     } catch (error) {
         console.error(`[REMOTE_CACHE] Failed to update remote cache:`, error);
     } finally {
+        // Replace the main cache with the temporary cache all at once
+        remoteCache.data = new Map(remoteCacheTemp.data);
+        remoteCacheTemp.data.clear();
         remoteCache.updateInProgress = false;
         remoteCache.updateStartTime = null;
     }
@@ -266,7 +281,7 @@ async function updateLocalCache() {
                 const durationSec = (durationMs / 1000).toFixed(2);
 
                 const currentTime = new Date();
-                localCache.data.set(localDir, {
+                localCacheTemp.data.set(localDir, {
                     bytes: sizeBytes,
                     count: null,
                     timestamp: currentTime.toISOString(),
@@ -326,6 +341,9 @@ async function updateLocalCache() {
     } catch (error) {
         console.error(`[LOCAL_CACHE] Failed to update local cache:`, error);
     } finally {
+        // Replace the main cache with the temporary cache all at once
+        localCache.data = new Map(localCacheTemp.data);
+        localCacheTemp.data.clear();
         localCache.updateInProgress = false;
         localCache.updateStartTime = null;
     }
