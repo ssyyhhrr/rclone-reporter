@@ -268,6 +268,7 @@ async function updateRemoteCache() {
                         directories: Array.from(rootDirectories.entries()).map(([name, info]) => ({
                             name,
                             bytes: info.bytes || 0,
+                            formatted: formatBytes(info.bytes || 0),
                             count: info.count || 0,
                             error: info.error || null
                         }))
@@ -584,7 +585,7 @@ function formatDateToLocal(isoDate) {
  */
 app.post('/api/compare', async (req, res) => {
     try {
-        const { remotePath, localPath, forceDirect } = req.body;
+        const { remotePath, localPath, forceDirect, includeDirectories } = req.body;
 
         if (!remotePath || !localPath) {
             return res.status(400).json({
@@ -635,6 +636,19 @@ app.post('/api/compare', async (req, res) => {
         if (remoteCache.data.has(remotePath)) {
             remoteSizeData = remoteCache.data.get(remotePath);
             console.log(`[API] Using cached data for ${remotePath} from ${remoteSizeData.timestamp}`);
+
+            // Filter directories if includeDirectories is specified
+            if (includeDirectories && Array.isArray(includeDirectories) && remoteSizeData.directories) {
+                const filteredDirectories = remoteSizeData.directories.filter(dir =>
+                    includeDirectories.includes(dir.name)
+                );
+                // Create a copy of the data with filtered directories
+                remoteSizeData = {
+                    ...remoteSizeData,
+                    directories: filteredDirectories
+                };
+                console.log(`[API] Filtered directories to: ${includeDirectories.join(', ')}`);
+            }
         } else {
             console.log(`[API] Cache miss for ${remotePath}, notifying client`);
 
@@ -810,7 +824,10 @@ app.get('/api/cache/status', (req, res) => {
                     timestamp: data.timestamp,
                     calculationDuration: data.calculationDurationMs ?
                         `${(data.calculationDurationMs / 1000).toFixed(2)}s` : undefined,
-                    directories: data.directories || []
+                    directories: (data.directories || []).map(dir => ({
+                        ...dir,
+                        formatted: dir.formatted || formatBytes(dir.bytes || 0) // Ensure formatted is included
+                    }))
                 };
             })
         },
