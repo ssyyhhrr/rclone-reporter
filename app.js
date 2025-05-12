@@ -40,6 +40,60 @@ const localSizeHistory = {
 app.use(express.json());
 
 /**
+ * List all directories in the root of a remote
+ * @param {string} remotePath - rclone remote path
+ * @returns {Promise<string[]>} - List of directory names
+ */
+function listRootDirectories(remotePath) {
+    return new Promise((resolve, reject) => {
+        exec(`rclone lsf "${remotePath}" --dirs-only --max-depth 1`, (error, stdout, stderr) => {
+            if (error) {
+                reject(error);
+                return;
+            }
+
+            // Parse directory names (removing trailing slashes)
+            const dirs = stdout.split('\n')
+                .filter(line => line.trim().length > 0)
+                .map(dir => dir.trim().replace(/\/$/, ''));
+
+            resolve(dirs);
+        });
+    });
+}
+
+/**
+ * Get sizes for multiple directories in parallel with rate limiting
+ * @param {string} remotePath - Base remote path
+ * @param {string[]} directories - Array of directory names
+ * @param {number} concurrency - Number of concurrent size operations
+ * @returns {Promise<object>} - Map of directory to size info
+ */
+async function getDirectorySizes(remotePath, directories, concurrency = 3) {
+    const results = new Map();
+
+    // Process directories in batches to avoid overwhelming the system
+    for (let i = 0; i < directories.length; i += concurrency) {
+        const batch = directories.slice(i, i + concurrency);
+        const batchPromises = batch.map(async (dir) => {
+            try {
+                const dirPath = `${remotePath}/${dir}`;
+                console.log(`[REMOTE_CACHE] Getting size for directory: ${dirPath}`);
+                const sizeInfo = await getRcloneSize(dirPath);
+                results.set(dir, sizeInfo);
+            } catch (error) {
+                console.error(`[REMOTE_CACHE] Error getting size for ${dir}:`, error);
+                results.set(dir, { error: error.message });
+            }
+        });
+
+        await Promise.all(batchPromises);
+    }
+
+    return results;
+}
+
+/**
  * Utility function to get directory size recursively
  * @param {string} directoryPath - Path of the directory to measure
  * @returns {Promise<number>} - Size of the directory in bytes
@@ -185,6 +239,22 @@ async function updateRemoteCache() {
                 console.log(`[REMOTE_CACHE] Running rclone size command for ${remotePath} - this may take a while...`);
                 const sizeInfo = await getRcloneSize(remotePath);
 
+                let rootDirectories = new Map();
+                if (!sizeInfo.error) {
+                    try {
+                        console.log(`[REMOTE_CACHE] Getting root directories for ${remotePath}`);
+                        const dirs = await listRootDirectories(remotePath);
+                        console.log(`[REMOTE_CACHE] Found ${dirs.length} root directories`);
+
+                        if (dirs.length > 0) {
+                            console.log(`[REMOTE_CACHE] Getting sizes for root directories...`);
+                            rootDirectories = await getDirectorySizes(remotePath, dirs);
+                        }
+                    } catch (dirError) {
+                        console.error(`[REMOTE_CACHE] Error getting root directories:`, dirError);
+                    }
+                }
+
                 const remoteEndTime = new Date();
                 const durationMs = remoteEndTime - remoteStartTime;
                 const durationSec = (durationMs / 1000).toFixed(2);
@@ -194,7 +264,13 @@ async function updateRemoteCache() {
                         bytes: sizeInfo.bytes || 0,
                         count: sizeInfo.count || 0,
                         timestamp: new Date().toISOString(),
-                        calculationDurationMs: durationMs
+                        calculationDurationMs: durationMs,
+                        directories: Array.from(rootDirectories.entries()).map(([name, info]) => ({
+                            name,
+                            bytes: info.bytes || 0,
+                            count: info.count || 0,
+                            error: info.error || null
+                        }))
                     });
 
                     console.log(`[REMOTE_CACHE] ✓ Updated cache for ${remotePath}: ${formatBytes(sizeInfo.bytes || 0)}, ${sizeInfo.count || 0} objects, took ${durationSec}s`);
@@ -603,12 +679,13 @@ app.post('/api/compare', async (req, res) => {
             remotePath,
             localPath,
             lastModified,
-            lastModifiedFormatted, // Add formatted property
+            lastModifiedFormatted,
             remote: {
                 bytes: remoteSizeBytes,
                 formatted: formatBytes(remoteSizeBytes),
                 count: remoteSizeData.count,
-                cachedAt: remoteSizeData.timestamp
+                cachedAt: remoteSizeData.timestamp,
+                directories: remoteSizeData.directories || []
             },
             local: {
                 bytes: localSizeBytes,
@@ -723,15 +800,19 @@ app.get('/api/cache/status', (req, res) => {
             updateInProgress: remoteCache.updateInProgress,
             updateStartTime: remoteCache.updateStartTime,
             remoteCount,
-            remotes: remoteKeys.map(key => ({
-                path: key,
-                size: formatBytes(remoteCache.data.get(key).bytes),
-                bytes: remoteCache.data.get(key).bytes,
-                count: remoteCache.data.get(key).count,
-                timestamp: remoteCache.data.get(key).timestamp,
-                calculationDuration: remoteCache.data.get(key).calculationDurationMs ?
-                    `${(remoteCache.data.get(key).calculationDurationMs / 1000).toFixed(2)}s` : undefined
-            }))
+            remotes: remoteKeys.map(key => {
+                const data = remoteCache.data.get(key);
+                return {
+                    path: key,
+                    size: formatBytes(data.bytes),
+                    bytes: data.bytes,
+                    count: data.count,
+                    timestamp: data.timestamp,
+                    calculationDuration: data.calculationDurationMs ?
+                        `${(data.calculationDurationMs / 1000).toFixed(2)}s` : undefined,
+                    directories: data.directories || []
+                };
+            })
         },
         local: {
             lastUpdated: localCache.lastUpdated,
