@@ -36,6 +36,11 @@ const localSizeHistory = {
     data: new Map() // Map<directoryPath, Array<{timestamp, bytes}>>
 };
 
+const CACHE_DIR = process.env.CACHE_DIR || './cache';
+const REMOTE_CACHE_FILE = path.join(CACHE_DIR, 'remote-cache.json');
+const LOCAL_CACHE_FILE = path.join(CACHE_DIR, 'local-cache.json');
+const SIZE_HISTORY_FILE = path.join(CACHE_DIR, 'size-history.json');
+
 // Middleware to parse JSON bodies
 app.use(express.json());
 
@@ -213,6 +218,130 @@ function formatBytes(bytes, decimals = 2) {
 }
 
 /**
+ * Ensure cache directory exists
+ */
+function ensureCacheDir() {
+    if (!fs.existsSync(CACHE_DIR)) {
+        console.log(`[CACHE] Creating cache directory at ${CACHE_DIR}`);
+        fs.mkdirSync(CACHE_DIR, { recursive: true });
+    }
+}
+
+/**
+ * Load remote cache from file
+ */
+function loadRemoteCache() {
+    try {
+        if (fs.existsSync(REMOTE_CACHE_FILE)) {
+            const cacheData = JSON.parse(fs.readFileSync(REMOTE_CACHE_FILE, 'utf8'));
+            remoteCache.data = new Map(Object.entries(cacheData.data || {}));
+            remoteCache.lastUpdated = cacheData.lastUpdated;
+            remoteCache.updateInProgress = cacheData.updateInProgress || false;
+            remoteCache.updateStartTime = cacheData.updateStartTime;
+            console.log(`[REMOTE_CACHE] Loaded cache from ${REMOTE_CACHE_FILE} with ${remoteCache.data.size} entries`);
+            console.log(`[REMOTE_CACHE] Last updated: ${remoteCache.lastUpdated}`);
+        } else {
+            console.log(`[REMOTE_CACHE] No cache file found at ${REMOTE_CACHE_FILE}, starting with empty cache`);
+        }
+    } catch (error) {
+        console.error(`[REMOTE_CACHE] Failed to load cache:`, error);
+        console.log(`[REMOTE_CACHE] Starting with empty cache`);
+    }
+}
+
+/**
+ * Save remote cache to file
+ */
+function saveRemoteCache() {
+    try {
+        ensureCacheDir();
+        const cacheData = {
+            data: Object.fromEntries(remoteCache.data),
+            lastUpdated: remoteCache.lastUpdated,
+            updateInProgress: remoteCache.updateInProgress,
+            updateStartTime: remoteCache.updateStartTime
+        };
+        fs.writeFileSync(REMOTE_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+        console.log(`[REMOTE_CACHE] Saved cache to ${REMOTE_CACHE_FILE}`);
+    } catch (error) {
+        console.error(`[REMOTE_CACHE] Failed to save cache:`, error);
+    }
+}
+
+/**
+ * Save local cache to file
+ */
+function saveLocalCache() {
+    try {
+        ensureCacheDir();
+        const cacheData = {
+            data: Object.fromEntries(localCache.data),
+            lastUpdated: localCache.lastUpdated,
+            updateInProgress: localCache.updateInProgress,
+            updateStartTime: localCache.updateStartTime
+        };
+        fs.writeFileSync(LOCAL_CACHE_FILE, JSON.stringify(cacheData, null, 2));
+        console.log(`[LOCAL_CACHE] Saved cache to ${LOCAL_CACHE_FILE}`);
+    } catch (error) {
+        console.error(`[LOCAL_CACHE] Failed to save cache:`, error);
+    }
+}
+
+/**
+ * Load local cache from file
+ */
+function loadLocalCache() {
+    try {
+        if (fs.existsSync(LOCAL_CACHE_FILE)) {
+            const cacheData = JSON.parse(fs.readFileSync(LOCAL_CACHE_FILE, 'utf8'));
+            localCache.data = new Map(Object.entries(cacheData.data || {}));
+            localCache.lastUpdated = cacheData.lastUpdated;
+            localCache.updateInProgress = cacheData.updateInProgress || false;
+            localCache.updateStartTime = cacheData.updateStartTime;
+            console.log(`[LOCAL_CACHE] Loaded cache from ${LOCAL_CACHE_FILE} with ${localCache.data.size} entries`);
+            console.log(`[LOCAL_CACHE] Last updated: ${localCache.lastUpdated}`);
+        } else {
+            console.log(`[LOCAL_CACHE] No cache file found at ${LOCAL_CACHE_FILE}, starting with empty cache`);
+        }
+    } catch (error) {
+        console.error(`[LOCAL_CACHE] Failed to load cache:`, error);
+        console.log(`[LOCAL_CACHE] Starting with empty cache`);
+    }
+}
+
+/**
+ * Save size history to file
+ */
+function saveSizeHistory() {
+    try {
+        ensureCacheDir();
+        const historyData = Object.fromEntries(localSizeHistory.data);
+        fs.writeFileSync(SIZE_HISTORY_FILE, JSON.stringify(historyData, null, 2));
+        console.log(`[LOCAL_CACHE] Saved size history to ${SIZE_HISTORY_FILE}`);
+    } catch (error) {
+        console.error(`[LOCAL_CACHE] Failed to save size history:`, error);
+    }
+}
+
+/**
+ * Load size history from file
+ */
+function loadSizeHistory() {
+    try {
+        if (fs.existsSync(SIZE_HISTORY_FILE)) {
+            const historyData = JSON.parse(fs.readFileSync(SIZE_HISTORY_FILE, 'utf8'));
+            localSizeHistory.data = new Map(Object.entries(historyData));
+            console.log(`[LOCAL_CACHE] Loaded size history from ${SIZE_HISTORY_FILE} with ${localSizeHistory.data.size} entries`);
+        } else {
+            console.log(`[LOCAL_CACHE] No size history file found at ${SIZE_HISTORY_FILE}, starting with empty history`);
+        }
+    } catch (error) {
+        console.error(`[LOCAL_CACHE] Failed to load size history:`, error);
+        console.log(`[LOCAL_CACHE] Starting with empty size history`);
+    }
+}
+
+/**
  * Update the cache with size information for all available remotes
  * @returns {Promise<void>}
  */
@@ -311,6 +440,7 @@ async function updateRemoteCache() {
         remoteCacheTemp.data.clear();
         remoteCache.updateInProgress = false;
         remoteCache.updateStartTime = null;
+        saveRemoteCache()
     }
 }
 
@@ -423,6 +553,8 @@ async function updateLocalCache() {
         localCacheTemp.data.clear();
         localCache.updateInProgress = false;
         localCache.updateStartTime = null;
+        saveLocalCache()
+        saveSizeHistory()
     }
 }
 
@@ -463,6 +595,8 @@ async function addToLocalCache(directoryPath) {
 
         console.log(`[LOCAL_CACHE] Added ${directoryPath} to cache: ${formatBytes(sizeBytes)}, calculation took ${(durationMs/1000).toFixed(2)}s`);
 
+        saveLocalCache()
+        saveSizeHistory()
         return dirInfo;
     } catch (error) {
         console.error(`[LOCAL_CACHE] Failed to add directory to cache:`, error);
@@ -936,6 +1070,11 @@ function setupCacheLogging() {
 app.listen(port, () => {
     console.log(`Sync comparison service listening on port ${port}`);
 
+    console.log(`[CACHE] Loading existing cache data from files...`);
+    loadRemoteCache();
+    loadLocalCache();
+    loadSizeHistory();
+
     // Setup logging for cache operations
     const logStream = setupCacheLogging();
 
@@ -945,6 +1084,13 @@ app.listen(port, () => {
 
     // Initialize cache and schedule updates
     scheduleCacheUpdates(!skipInitialUpdate);
+
+    console.log(`[CACHE] Setting up periodic cache saves every 5 minutes`);
+    setInterval(() => {
+        saveRemoteCache();
+        saveLocalCache();
+        saveSizeHistory();
+    }, 5 * 60 * 1000); // 5 minutes
 
     console.log(`[CACHE] Cache system initialized with the following settings:`);
     console.log(`[CACHE] - Skip initial update: ${skipInitialUpdate}`);
@@ -956,7 +1102,19 @@ app.listen(port, () => {
 
     // Handle process shutdown
     process.on('SIGINT', () => {
-        console.log(`[CACHE] Shutting down, closing log file`);
+        console.log(`[CACHE] Shutting down, saving cache and closing log file`);
+        saveRemoteCache();
+        saveLocalCache();
+        saveSizeHistory();
+        logStream.end();
+        process.exit();
+    });
+
+    process.on('SIGTERM', () => {
+        console.log(`[CACHE] Received SIGTERM, saving cache and shutting down`);
+        saveRemoteCache();
+        saveLocalCache();
+        saveSizeHistory();
         logStream.end();
         process.exit();
     });
